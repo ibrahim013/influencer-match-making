@@ -1,0 +1,27 @@
+.venv/
+.venv*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.env
+*.sqlite3
+.DS_Store
+node_modules/
+dist/
+
+.cursorrules
+.cursorignore
+.cursor
+
+# Terraform / deploy
+infra/envs/dev/backend.hcl
+infra/envs/dev/backend.ci.hcl
+*.auto.tfvars
+.env.deploy
+
+# Terraform caches / local state
+.terraform/
+*.tfstate
+*.tfstate.*

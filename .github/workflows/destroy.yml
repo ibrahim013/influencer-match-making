@@ -1,0 +1,82 @@
+name: Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type DESTROY to tear down all dev AWS resources
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  reject:
+    if: github.event.inputs.confirm != 'DESTROY'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wrong confirmation
+        run: |
+          echo "::error::You must type exactly DESTROY (case-sensitive) to confirm."
+          exit 1
+
+  destroy:
+    if: github.event.inputs.confirm == 'DESTROY'
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ vars.TF_LOCK_TABLE }}
+      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      TF_VAR_pinecone_api_key: ${{ secrets.PINECONE_API_KEY }}
+      TF_VAR_langsmith_api_key: ${{ secrets.LANGSMITH_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Optional Terraform variable defaults
+        run: |
+          echo "TF_VAR_pinecone_index_name=${PINECONE_INDEX_NAME:-influencer-creators}" >> "$GITHUB_ENV"
+          echo "TF_VAR_competitor_list=${COMPETITOR_LIST:-Nike,Adidas,Puma,Reebok}" >> "$GITHUB_ENV"
+        env:
+          PINECONE_INDEX_NAME: ${{ vars.PINECONE_INDEX_NAME }}
+          COMPETITOR_LIST: ${{ vars.COMPETITOR_LIST }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: |
+          set -euo pipefail
+          test -n "${TF_STATE_BUCKET:-}" && test -n "${TF_LOCK_TABLE:-}" || { echo "Set TF_STATE_BUCKET and TF_LOCK_TABLE."; exit 1; }
+          cat > infra/envs/dev/backend.ci.hcl <<EOF
+          bucket         = "${TF_STATE_BUCKET}"
+          key            = "dev/terraform.tfstate"
+          region         = "${AWS_REGION}"
+          dynamodb_table = "${TF_LOCK_TABLE}"
+          encrypt        = true
+          EOF
+          terraform -chdir=infra/envs/dev init -backend-config=backend.ci.hcl -input=false
+
+      - name: Empty SPA bucket
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          BUCKET="$(terraform -chdir=infra/envs/dev output -raw spa_bucket_id)"
+          aws s3 rm "s3://${BUCKET}/" --recursive || true
+
+      - name: Terraform destroy
+        run: |
+          terraform -chdir=infra/envs/dev destroy -input=false -auto-approve

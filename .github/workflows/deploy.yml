@@ -1,0 +1,114 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ vars.TF_LOCK_TABLE }}
+      TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      TF_VAR_pinecone_api_key: ${{ secrets.PINECONE_API_KEY }}
+      TF_VAR_langsmith_api_key: ${{ secrets.LANGSMITH_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Optional Terraform variable defaults
+        run: |
+          echo "TF_VAR_pinecone_index_name=${PINECONE_INDEX_NAME:-influencer-creators}" >> "$GITHUB_ENV"
+          echo "TF_VAR_competitor_list=${COMPETITOR_LIST:-Nike,Adidas,Puma,Reebok}" >> "$GITHUB_ENV"
+        env:
+          PINECONE_INDEX_NAME: ${{ vars.PINECONE_INDEX_NAME }}
+          COMPETITOR_LIST: ${{ vars.COMPETITOR_LIST }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: |
+          set -euo pipefail
+          test -n "${TF_STATE_BUCKET:-}" && test -n "${TF_LOCK_TABLE:-}" || { echo "Set repo variables TF_STATE_BUCKET and TF_LOCK_TABLE (from bootstrap outputs)."; exit 1; }
+          cat > infra/envs/dev/backend.ci.hcl <<EOF
+          bucket         = "${TF_STATE_BUCKET}"
+          key            = "dev/terraform.tfstate"
+          region         = "${AWS_REGION}"
+          dynamodb_table = "${TF_LOCK_TABLE}"
+          encrypt        = true
+          EOF
+          terraform -chdir=infra/envs/dev init -backend-config=backend.ci.hcl -input=false
+
+      - name: Terraform apply (base infra, no ECS)
+        run: |
+          terraform -chdir=infra/envs/dev apply -input=false -auto-approve \
+            -target=module.network \
+            -target=module.ecr \
+            -target=module.rds \
+            -target=module.frontend
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        run: |
+          set -euo pipefail
+          ECR_URL="$(terraform -chdir=infra/envs/dev output -raw ecr_repository_url)"
+          docker build -f backend/Dockerfile -t "${ECR_URL}:${GITHUB_SHA}" -t "${ECR_URL}:latest" .
+          docker push "${ECR_URL}:${GITHUB_SHA}"
+          docker push "${ECR_URL}:latest"
+
+      - name: Terraform apply (full stack)
+        run: |
+          terraform -chdir=infra/envs/dev apply -input=false -auto-approve \
+            -var="image_tag=${GITHUB_SHA}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        run: |
+          set -euo pipefail
+          ALB_DNS="$(terraform -chdir=infra/envs/dev output -raw alb_dns_name)"
+          export VITE_API_BASE_URL="http://${ALB_DNS}"
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Upload SPA to S3
+        run: |
+          set -euo pipefail
+          BUCKET="$(terraform -chdir=infra/envs/dev output -raw spa_bucket_id)"
+          aws s3 sync frontend/dist "s3://${BUCKET}/" --delete
+
+      - name: Invalidate CloudFront
+        run: |
+          set -euo pipefail
+          DIST="$(terraform -chdir=infra/envs/dev output -raw cloudfront_distribution_id)"
+          aws cloudfront create-invalidation --distribution-id "${DIST}" --paths "/*"

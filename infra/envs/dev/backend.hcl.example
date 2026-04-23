@@ -1,0 +1,8 @@
+# Copy to backend.hcl and fill from `terraform output` in infra/bootstrap.
+# Then: terraform -chdir=infra/envs/dev init -backend-config=backend.hcl
+
+bucket         = "matchmaking-tfstate-123456789012"
+key            = "dev/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "matchmaking-tflock"
+encrypt        = true

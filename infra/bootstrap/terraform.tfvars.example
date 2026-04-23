@@ -1,0 +1,12 @@
+aws_region   = "us-east-1"
+github_org   = "my-github-org"
+github_repo  = "matchmaking"
+
+# Optional: also trust GitHub Environment "dev" for workflow_dispatch
+# github_environment = "dev"
+
+# Optional: override bucket name (default is matchmaking-tfstate-<account_id>)
+# state_bucket_suffix = "mycompany"
+
+# Optional: only if your GitHub OIDC provider URL differs (default is standard GitHub Actions)
+# github_oidc_provider_url = "https://token.actions.githubusercontent.com"
