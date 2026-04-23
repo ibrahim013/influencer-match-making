@@ -1,0 +1,9 @@
+<!-- Reference RAIL for outreach structure. Runtime uses Guard.for_pydantic(OutreachDraft). -->
+<rail version="0.1">
+  <output>
+    <string name="subject" description="Short email subject"/>
+    <string name="body" description="Personalized outreach body"/>
+    <string name="cta" description="Clear call to action"/>
+    <string name="referenced_metadata" description="Specific creator metadata cited"/>
+  </output>
+</rail>
