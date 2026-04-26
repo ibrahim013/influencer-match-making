@@ -78,6 +78,35 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
+# Outbound internet for private subnets (App Runner VPC connector ENIs have no public IP).
+# Single-AZ NAT is enough for dev; production would use one NAT per AZ or IPv6 egress-only.
+resource "aws_eip" "nat" {
+  domain = "vpc"
+
+  tags = {
+    Name = "${var.name_prefix}-nat-eip"
+  }
+
+  depends_on = [aws_internet_gateway.main]
+}
+
+resource "aws_nat_gateway" "main" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id
+
+  tags = {
+    Name = "${var.name_prefix}-nat"
+  }
+
+  depends_on = [aws_internet_gateway.main]
+}
+
+resource "aws_route" "private_internet_via_nat" {
+  route_table_id         = aws_route_table.private.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.main.id
+}
+
 # ENIs for App Runner VPC connector (outbound to RDS, OpenAI, Pinecone, etc.)
 resource "aws_security_group" "apprunner_connector" {
   name_prefix = "${var.name_prefix}-ar-"
