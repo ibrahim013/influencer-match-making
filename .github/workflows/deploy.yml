@@ -23,7 +23,7 @@ jobs:
       TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
       TF_VAR_pinecone_api_key: ${{ secrets.PINECONE_API_KEY }}
       TF_VAR_langsmith_api_key: ${{ secrets.LANGSMITH_API_KEY }}
-
+      TF_VAR_langsmith_tracing: ${{ secrets.LANGSMITH_TRACING }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
