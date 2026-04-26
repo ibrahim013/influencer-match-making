@@ -20,7 +20,7 @@ resource "aws_iam_role" "access" {
 
 resource "aws_iam_role_policy_attachment" "access_ecr" {
   role       = aws_iam_role.access.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForEcrAccess"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess"
 }
 
 # Task role: optional but needed if referenced; some accounts require a role for VPC egress
