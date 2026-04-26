@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -48,28 +49,16 @@ class _NoOpVectorStore:
         return []
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _complete_startup(app: FastAPI) -> None:
+    """DB, Pinecone, LangGraph — runs after Uvicorn accepts traffic so /healthz can pass (e.g. App Runner)."""
     settings = get_settings()
-    configure_logging(log_format=settings.log_format)
-    apply_langsmith_runtime_env(settings)
-    # Guardrails reads GUARDRAILS_RUN_SYNC at validate time; sync mode avoids
-    # "Could not obtain an event loop" when guard runs in a worker thread.
-    os.environ["GUARDRAILS_RUN_SYNC"] = (
-        "true" if settings.guardrails_run_sync else "false"
-    )
-    testing = os.getenv("TESTING", "").lower() in ("1", "true", "yes")
-
-    embeddings = make_embeddings(settings, testing=testing)
+    embeddings = make_embeddings(settings, testing=False)
     llm = ChatOpenAI(
         model=settings.openai_chat_model,
         api_key=settings.openai_api_key,
         temperature=0.2,
     )
-    if testing:
-        vector_store = _NoOpVectorStore()  # type: ignore[assignment]
-    else:
-        vector_store = _vector_store(settings, embeddings)
+    vector_store = _vector_store(settings, embeddings)
     oa_async = AsyncOpenAI(api_key=settings.openai_api_key)
     oa_sync = OpenAI(api_key=settings.openai_api_key)
     if settings.langsmith_tracing:
@@ -83,30 +72,99 @@ async def lifespan(app: FastAPI):
         openai_client=oa_async,
         openai_sync=oa_sync,
     )
-    app.state.background_tasks = set()
 
-    if testing:
-        app.state.pool = None
-        checkpointer: Any = MemorySaver()
-        logger.warning("TESTING mode: using MemorySaver checkpointer")
-    else:
-        pool = AsyncConnectionPool(
-            conninfo=settings.database_url,
-            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
-            open=False,
-        )
-        await pool.open()
-        app.state.pool = pool
-        checkpointer = AsyncPostgresSaver(pool)
-        await checkpointer.setup()
+    pool = AsyncConnectionPool(
+        conninfo=settings.database_url,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        open=False,
+    )
+    await pool.open()
+    app.state.pool = pool
+    checkpointer = AsyncPostgresSaver(pool)
+    await checkpointer.setup()
 
     graph = build_campaign_graph().compile(
         checkpointer=checkpointer,
         interrupt_before=["writer_node"],
     )
     app.state.graph = graph
+    app.state.api_ready = True
     logger.info("LangGraph compiled with interrupt_before=['writer_node']")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    configure_logging(log_format=settings.log_format)
+    apply_langsmith_runtime_env(settings)
+    # Guardrails reads GUARDRAILS_RUN_SYNC at validate time; sync mode avoids
+    # "Could not obtain an event loop" when guard runs in a worker thread.
+    os.environ["GUARDRAILS_RUN_SYNC"] = (
+        "true" if settings.guardrails_run_sync else "false"
+    )
+    testing = os.getenv("TESTING", "").lower() in ("1", "true", "yes")
+
+    app.state.background_tasks = set()
+    app.state.api_ready = False
+
+    if testing:
+        embeddings = make_embeddings(settings, testing=testing)
+        llm = ChatOpenAI(
+            model=settings.openai_chat_model,
+            api_key=settings.openai_api_key,
+            temperature=0.2,
+        )
+        vector_store = _NoOpVectorStore()  # type: ignore[assignment]
+        oa_async = AsyncOpenAI(api_key=settings.openai_api_key)
+        oa_sync = OpenAI(api_key=settings.openai_api_key)
+        if settings.langsmith_tracing:
+            oa_async = wrap_openai(oa_async)
+            oa_sync = wrap_openai(oa_sync)
+        app.state.agent_deps = AgentDeps(
+            settings=settings,
+            llm=llm,
+            embeddings=embeddings,
+            vector_store=vector_store,
+            openai_client=oa_async,
+            openai_sync=oa_sync,
+        )
+        app.state.pool = None
+        checkpointer: Any = MemorySaver()
+        logger.warning("TESTING mode: using MemorySaver checkpointer")
+        graph = build_campaign_graph().compile(
+            checkpointer=checkpointer,
+            interrupt_before=["writer_node"],
+        )
+        app.state.graph = graph
+        app.state.api_ready = True
+        logger.info("LangGraph compiled with interrupt_before=['writer_node']")
+        yield
+        return
+
+    # Production / App Runner: yield before Postgres+Pinecone so /healthz responds while warming up.
+    app.state.graph = None  # type: ignore[assignment]
+    app.state.agent_deps = None  # type: ignore[assignment]
+    app.state.pool = None
+    startup_task = asyncio.create_task(_complete_startup(app))
+    app.state._startup_task = startup_task
+
+    def _log_startup_failure(t: asyncio.Task[None]) -> None:
+        try:
+            t.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Background API startup failed")
+
+    startup_task.add_done_callback(_log_startup_failure)
+
     yield
+
+    startup_task.cancel()
+    try:
+        await startup_task
+    except asyncio.CancelledError:
+        pass
     if getattr(app.state, "pool", None) is not None:
         await app.state.pool.close()
 
