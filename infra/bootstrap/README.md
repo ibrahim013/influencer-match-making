@@ -50,4 +50,4 @@ terraform apply
 
 ## Security note
 
-The deploy role attaches `PowerUserAccess` and `IAMFullAccess` so Terraform and ECS task IAM can be managed without hand-maintaining hundreds of ARNs. Tighten the inline/custom policies before production multi-tenant use.
+The deploy role attaches `PowerUserAccess` and `IAMFullAccess` so Terraform can manage App Runner, ECR, IAM roles, and related resources without hand-maintaining hundreds of ARNs. Tighten the inline/custom policies before production multi-tenant use.

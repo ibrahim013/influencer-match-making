@@ -6,24 +6,13 @@ output "ecr_repository_name" {
   value = module.ecr.repository_name
 }
 
-output "ecs_cluster_name" {
-  value = module.ecs.cluster_name
+output "apprunner_service_id" {
+  value = module.apprunner.service_id
 }
 
-output "ecs_service_name" {
-  value = module.ecs.service_name
-}
-
-output "ecs_task_definition_family" {
-  value = module.ecs.task_definition_family
-}
-
-output "alb_dns_name" {
-  value = module.ecs.alb_dns_name
-}
-
-output "alb_url" {
-  value = "http://${module.ecs.alb_dns_name}"
+output "apprunner_service_url" {
+  value       = module.apprunner.service_url
+  description = "HTTPS base URL for the API (set VITE_API_BASE_URL to this)."
 }
 
 output "cloudfront_domain_name" {

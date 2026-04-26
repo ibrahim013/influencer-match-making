@@ -44,8 +44,7 @@ docker push "${ECR_URL}:latest"
 terraform -chdir="${TF_DIR}" apply -input=false -auto-approve \
   -var="image_tag=${IMAGE_TAG}"
 
-ALB_DNS="$(terraform -chdir="${TF_DIR}" output -raw alb_dns_name)"
-export VITE_API_BASE_URL="http://${ALB_DNS}"
+export VITE_API_BASE_URL="$(terraform -chdir="${TF_DIR}" output -raw apprunner_service_url)"
 
 pushd frontend >/dev/null
 npm ci
@@ -59,4 +58,4 @@ DIST="$(terraform -chdir="${TF_DIR}" output -raw cloudfront_distribution_id)"
 aws cloudfront create-invalidation --distribution-id "${DIST}" --paths "/*"
 
 echo "SPA: $(terraform -chdir="${TF_DIR}" output -raw cloudfront_url)"
-echo "API: $(terraform -chdir="${TF_DIR}" output -raw alb_url)"
+echo "API: $(terraform -chdir="${TF_DIR}" output -raw apprunner_service_url)"

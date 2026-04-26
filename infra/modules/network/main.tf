@@ -78,18 +78,11 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-resource "aws_security_group" "alb" {
-  name_prefix = "${var.name_prefix}-alb-"
-  description = "ALB ingress"
+# ENIs for App Runner VPC connector (outbound to RDS, OpenAI, Pinecone, etc.)
+resource "aws_security_group" "apprunner_connector" {
+  name_prefix = "${var.name_prefix}-ar-"
+  description = "App Runner VPC connector"
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
   egress {
     from_port   = 0
@@ -103,36 +96,7 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
-    Name = "${var.name_prefix}-alb-sg"
-  }
-}
-
-resource "aws_security_group" "ecs_tasks" {
-  name_prefix = "${var.name_prefix}-ecs-"
-  description = "Fargate tasks"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description     = "API from ALB"
-    from_port       = 8000
-    to_port         = 8000
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-
-  tags = {
-    Name = "${var.name_prefix}-ecs-sg"
+    Name = "${var.name_prefix}-apprunner-connector-sg"
   }
 }
 
@@ -142,11 +106,11 @@ resource "aws_security_group" "rds" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "Postgres from ECS"
+    description     = "Postgres from App Runner VPC connector"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.ecs_tasks.id]
+    security_groups = [aws_security_group.apprunner_connector.id]
   }
 
   egress {

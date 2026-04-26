@@ -95,8 +95,8 @@ jobs:
       - name: Build frontend
         run: |
           set -euo pipefail
-          ALB_DNS="$(terraform -chdir=infra/envs/dev output -raw alb_dns_name)"
-          export VITE_API_BASE_URL="http://${ALB_DNS}"
+          API_BASE="$(terraform -chdir=infra/envs/dev output -raw apprunner_service_url)"
+          export VITE_API_BASE_URL="${API_BASE}"
           cd frontend
           npm ci
           npm run build

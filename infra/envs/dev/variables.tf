@@ -14,11 +14,6 @@ variable "image_tag" {
   default     = "latest"
 }
 
-variable "ecs_desired_count" {
-  type    = number
-  default = 1
-}
-
 variable "openai_api_key" {
   type      = string
   sensitive = true

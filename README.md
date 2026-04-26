@@ -89,7 +89,9 @@ Optional: `cp frontend/.env.example frontend/.env` and set `VITE_API_BASE_URL` t
 
 ## AWS deployment (Terraform + GitHub Actions)
 
-Topology: **React (Vite)** → **S3** (private) → **CloudFront**; **FastAPI** → **ECS Fargate** behind an **internet-facing ALB**; **PostgreSQL** on **RDS** (private subnets). Infra code lives under [`infra/`](infra/).
+Topology (POC / dev): **React (Vite)** → **S3** (private) → **CloudFront**; **FastAPI** on **AWS App Runner** (default **`https://…awsapprunner.com`**) with a **VPC connector** to **RDS PostgreSQL** in private subnets. Infra code lives under [`infra/`](infra/).
+
+**Note:** [App Runner will stop taking new customers after April 30, 2026](https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html). AWS also documents a **~120s total HTTP request timeout** per request—long HITL pauses or very long **SSE** sessions may need reconnect logic for production, but the POC is fine with keepalives in [`backend/app/api/campaigns.py`](backend/app/api/campaigns.py).
 
 ### One-time bootstrap
 
@@ -113,13 +115,13 @@ export AWS_REGION=us-east-1          # or put in .env.deploy
 ./scripts/destroy.sh DESTROY
 ```
 
-### Mixed content (HTTPS SPA → HTTP API)
+### HTTPS and the browser
 
-The default stack uses a **CloudFront HTTPS** URL for the SPA and **HTTP** on the ALB. Browsers block **mixed content**, so the production build sets `VITE_API_BASE_URL` to `http://<alb-dns>` while the app is served from `https://<cloudfront>…` — **API calls from the browser will fail until you add HTTPS on the API** (ACM certificate on the ALB or API behind CloudFront) or serve the SPA over HTTP for debugging only. See the deployment workflow for where `VITE_API_BASE_URL` is injected.
+The production build sets **`VITE_API_BASE_URL`** to the **App Runner service URL** (`https://…`), so the **CloudFront (HTTPS) SPA** calls an **HTTPS API** and **mixed content** is avoided. The deploy workflow and [`scripts/deploy.sh`](scripts/deploy.sh) read this from `terraform output apprunner_service_url`.
 
-### SSE / ALB idle timeouts
+### SSE and timeouts
 
-Long-lived SSE uses ALB `idle_timeout = 4000s` and periodic `: keep-alive` SSE comments so streams survive human-in-the-loop pauses. See [`backend/app/api/campaigns.py`](backend/app/api/campaigns.py).
+The stream endpoint sends periodic **`: keep-alive`** SSE comments during HITL pauses (see [`backend/app/api/campaigns.py`](backend/app/api/campaigns.py)). App Runner’s **~120s** per-request cap still applies at the platform level—keep sessions within that for the POC, or add client reconnect if you outgrow it.
 
 ## API (for a React client)
 
