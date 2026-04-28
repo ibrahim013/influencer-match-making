@@ -1,169 +1,233 @@
 # Influencer Matchmaking Engine
 
+> **Find & shortlist creators for campaigns using an agentic, vector-backed pipeline, HITL review, and real-time dashboard.**
+
+---
+
+![Architecture Diagram](docs/architecture.png) <!-- Optional: Replace with your diagram -->
+
+## Features
+
+- **Automatic Matching:** Finds and recommends creators based on campaign brief.
+- **Human-in-the-Loop:** Approvals and interventions at key pipeline stages.
+- **Real-time Dashboard:** View agent/campaign status, review candidates, and approve selections instantly.
+- **Streamed Updates:** SSE/WebSocket for low-latency UI sync.
+- **Modern stack:** FastAPI, React (Vite+TS), Pinecone, OpenAI, Tailwind, Terraform, GitHub Actions.
+
+---
+
+## Table of Contents
+
+- [About](#about)
+- [Features](#features)
+- [Architecture Overview](#architecture-overview)
+- [Tech Stack](#tech-stack)
+- [Quick Start](#quick-start)
+    - [Docker](#docker)
+    - [Local Development](#local-development)
+    - [Frontend](#frontend)
+- [Deployment](#deployment)
+    - [AWS (Terraform + GitHub Actions)](#aws-terraform--github-actions)
+- [API Overview](#api-overview)
+- [Environment Variables](#environment-variables)
+- [Troubleshooting](#troubleshooting)
+- [Project Layout](#project-layout)
+- [Contributing](#contributing)
+
+---
+
 ## About
 
-Influencer Matchmaking helps brands find and shortlist creators who fit a campaign brief. You describe the brand and goals; an agentic pipeline researches candidates from a vector-backed creator index, audits fit, and surfaces a ranked list for human-in-the-loop review. After you approve a creator, the system drafts outreach copy and validates it with moderation and outbound guardrails. The included React console streams run progress so you can follow logs, compare candidates, and approve the match end to end.
+Influencer Matchmaking helps brands find and shortlist creators who best fit a given campaign brief. An agentic pipeline researches candidates from a vector-based index, applies moderation and filtering, and lets you approve or reject recommendations directly in a modern dashboard.
+
+---
+
+## Architecture Overview
+
+- **Backend:**  
+  Orchestrates the agentic workflow via a LangGraph graph of nodes:
+    - `researcher_node` → `auditor_node` → `human_review_node` → *(interrupt before `writer_node`)* → `writer_node` → `guardrail_validator`
+    - Interrupts at human-review; resumes via approval endpoint and completes pipeline.
+  - Exposes API via FastAPI.
+  - Streams real-time state updates using SSE.
+  - Uses Pinecone for search/indexing and OpenAI for intelligence.
+
+- **Frontend:**  
+  Monorepo with `frontend/` as a Vite+TypeScript app featuring:
+    - React Query for state management and API sync.
+    - Realtime UI updates from backend streams (WebSocket/SSE).
+    - Tailwind, shadcn/ui, Lucide icons for modern DX.
+
+- **AWS Cloud:**  
+  - API deployed to AWS App Runner.
+  - Frontend static on S3 + CloudFront.
+  - IaC via Terraform; deployment managed with GitHub Actions.
+
+---
 
 ## Tech Stack
-## Backend
-**FastAPI** API for the workflow above, using **LangGraph**, **Pinecone** (via `langchain-pinecone`), **GPT-4o** (via `langchain-openai`), **Pydantic v2**, **OpenAI Moderation** (inbound), **guardrails-ai** (Ghostwriter wrap), and a **Postgres** LangGraph checkpointer (`langgraph-checkpoint-postgres`).
 
-## Frontend
-**React (Vite)** with **TypeScript** for the console UI, styled using **Tailwind CSS**, **shadcn/ui** components, and **Lucide React** icons. Data/state fetched with **TanStack Query (React Query)**, with agent "thinking" animations via **Framer Motion**. Real-time UI updates use native **WebSocket** or **EventSource (SSE)** hooks.
+| Layer      | Main Tools / Libraries                                                    |
+|------------|--------------------------------------------------------------------------|
+| Backend    | FastAPI, LangGraph, Pinecone (via langchain-pinecone), OpenAI, Pydantic v2, guardrails-ai, Postgres |
+| Frontend   | React (Vite), TypeScript, Tailwind CSS, shadcn/ui, Lucide, React Query, Framer Motion |
+| DevOps     | Docker, Terraform, GitHub Actions, AWS (App Runner, S3, CloudFront, RDS), uv+pytest |
 
+---
 
-## Architecture
-## Backend
-- **Graph:** `researcher_node` → `auditor_node` → `human_review_node` → *(interrupt before `writer_node`)* → `writer_node` → `guardrail_validator` → (retry writer up to 3× on outbound failure or `END`).
-- **HITL:** The compiled graph uses `interrupt_before=["writer_node"]`. `POST /campaign/{thread_id}/approve` sets `is_approved` / `selected_candidate_id` and schedules a background `ainvoke(None)` resume.
-- **SSE:** `GET /campaign/{thread_id}/stream` **polls** `graph.aget_state` and emits JSON snapshots (it does **not** call `astream`/`ainvoke`, so it never accidentally resumes the graph before approval).
+## Quick Start
 
-## Frontend
-**Frontend**
+### Docker
 
-- **App Structure:** Monorepo with `frontend/` as a Vite app (TypeScript). Core UI is a dashboard that shows agent status, campaign progress, and candidate details in modals, tables, or cards.
-- **State Management:** Data fetching, mutations, and cache are managed via **TanStack Query** (React Query). App state is colocated where possible; key context (user auth, WebSocket/SSE subscriptions) via React Context and custom hooks.
-- **Data Flow:** API calls via OpenAPI endpoints (`FastAPI` backend), using fetch or axios, and websocket/SSE hooks for streaming log/state updates.
-- **UI/UX:** Tailwind CSS for utility-first styling, **shadcn/ui** for ready components (dialogs, toasts, skeleton loaders), and **Lucide React** for icons. Framer Motion animates agent "thinking" and progress feedback.
-- **Real-time:** Subscribes to backend agent state (campaign progress, candidate status) with a native WebSocket or **EventSource (SSE)** for low-latency, robust updates, updating UI incrementally as the agent pipeline runs.
+1. **Copy and configure environment:**
 
-**Sample flow:**
-1. Campaign creation triggers agentic pipeline; progress/status streamed to dashboard.
-2. User reviews/approves candidates in UI and triggers follow-up steps.
-3. All state is reactively reflected using React Query + real-time streams; no polling needed.
+    ```bash
+    cp backend/.env.example backend/.env
+    # Edit backend/.env to set OPENAI_API_KEY, PINECONE_API_KEY, and the Pinecone index name
+    ```
 
+2. **Build and run services:**
 
-## Quick start (Docker)
+    ```bash
+    docker compose up --build
+    # API: http://localhost:8000/docs
+    ```
 
-1. Copy env: `cp backend/.env.example backend/.env` and set `OPENAI_API_KEY`, `PINECONE_API_KEY`, and index name.
-2. `docker compose up --build` — the API image installs from [`backend/uv.lock`](backend/uv.lock) via `uv sync --frozen`.
-3. Seed Pinecone (host network example):
+3. **Seed Pinecone (host networking):**
 
-```bash
-docker compose run --rm -e OPENAI_API_KEY -e PINECONE_API_KEY backend \
-  python scripts/seed_pinecone.py
-```
+    ```bash
+    docker compose run --rm -e OPENAI_API_KEY -e PINECONE_API_KEY backend \
+      python scripts/seed_pinecone.py
+    ```
 
-4. API: `http://localhost:8000/docs`
+---
 
-## Local development (uv)
+### Local Development
 
-Dependencies and the lockfile live under **`backend/`** only.
-
+**Backend (with uv):**
 ```bash
 cd backend
 uv sync --extra dev
 export DATABASE_URL=postgresql://langgraph:langgraph@localhost:5432/langgraph
 export OPENAI_API_KEY=...
 export PINECONE_API_KEY=...
-unset TESTING   # use real Postgres checkpointer
+unset TESTING   # Use real Postgres checkpointer
 uv run uvicorn app.main:app --reload --app-dir .
 ```
 
-**Tests** (no Pinecone/OpenAI calls; uses `TESTING=1`, in-process `MemorySaver`, and no-op vector store until tests inject fakes):
-
+**Tests (uses in-memory fakes, no Pinecone/OpenAI):**
 ```bash
-cd backend && uv run pytest tests -v
+cd backend
+uv run pytest tests -v
 ```
 
-To refresh the lockfile after editing `pyproject.toml`: `cd backend && uv lock`.
-
-More detail: [backend/README.md](backend/README.md).
-
-`conftest.py` sets `TESTING=1` before importing the app so the lifespan skips Pinecone index initialization with dummy keys.
-
-## Quick start (frontend)
-
-1. Run the API locally (see [Local development (uv)](#local-development-uv) or [Docker](#quick-start-docker)) so it is available at the URL you configure below.
-2. Install and start the Vite app:
-
+Update lockfile after changing dependencies:
 ```bash
-cd frontend
-npm install
-npm run dev
+cd backend && uv lock
 ```
 
-3. Open the URL Vite prints (default `http://localhost:5173`). The UI calls the FastAPI campaign routes under `VITE_API_BASE_URL` (defaults to `http://localhost:8000` if unset).
+---
 
-Optional: `cp frontend/.env.example frontend/.env` and set `VITE_API_BASE_URL` to your API origin (no trailing slash). You can also set the API base URL on the Settings page in the app (persisted in `localStorage`).
+### Frontend
 
-## AWS deployment (Terraform + GitHub Actions)
+1. Ensure backend API is running/available at the correct URL.
+2. In a new shell:
+    ```bash
+    cd frontend
+    npm install
+    npm run dev
+    ```
+3. Open [http://localhost:5173](http://localhost:5173).  
+   (Configure API base URL with `frontend/.env` and `VITE_API_BASE_URL` if using non-default backend.)
 
-Topology (POC / dev): **React (Vite)** → **S3** (private) → **CloudFront**; **FastAPI** on **AWS App Runner** (default **`https://…awsapprunner.com`**) with a **VPC connector** to **RDS PostgreSQL** in private subnets. Infra code lives under [`infra/`](infra/).
+---
 
-**Note:** [App Runner will stop taking new customers after April 30, 2026](https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html). AWS also documents a **~120s total HTTP request timeout** per request—long HITL pauses or very long **SSE** sessions may need reconnect logic for production, but the POC is fine with keepalives in [`backend/app/api/campaigns.py`](backend/app/api/campaigns.py).
+## Deployment
 
-### One-time bootstrap
+### AWS (Terraform + GitHub Actions)
 
-1. From your machine, run Terraform in [`infra/bootstrap/`](infra/bootstrap/) (see [infra/bootstrap/README.md](infra/bootstrap/README.md)) to create the remote state bucket, DynamoDB lock table, and GitHub OIDC deploy role.
-2. Copy [`infra/envs/dev/backend.hcl.example`](infra/envs/dev/backend.hcl.example) to `infra/envs/dev/backend.hcl` and set `bucket` / `dynamodb_table` from bootstrap outputs, then `terraform -chdir=infra/envs/dev init -backend-config=backend.hcl`.
+- **Infra:** S3 (static), CloudFront, App Runner, RDS, VPC via Terraform in `infra/`.
+- **One-time:**
+    - Run Terraform in [`infra/bootstrap/`](infra/bootstrap/) to create remote state and lock.
+    - Copy/adjust `infra/envs/dev/backend.hcl.example` for your dev stack.
 
-### GitHub repository configuration
+- **Credentials:**  
+  Set repo variables: `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN`, `TF_STATE_BUCKET`, `TF_LOCK_TABLE`.  
+  Secrets: `OPENAI_API_KEY`, `PINECONE_API_KEY`.  
+  Optional: `LANGSMITH_API_KEY`, `PINECONE_INDEX_NAME`, `COMPETITOR_LIST`.
 
-**Variables:** `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN` (from bootstrap), `TF_STATE_BUCKET`, `TF_LOCK_TABLE` (same names as bootstrap outputs). Optional: `PINECONE_INDEX_NAME`, `COMPETITOR_LIST`.
+- **Workflows:**  
+  Push to `main` auto-deploys via [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml).  
+  Destroy with [`.github/workflows/destroy.yml`](.github/workflows/destroy.yml) (manual: type `DESTROY` to confirm).
 
-**Secrets:** `OPENAI_API_KEY`, `PINECONE_API_KEY`. Optional: `LANGSMITH_API_KEY`.
+**App Runner will stop taking new customers after April 2026; consider alternatives for future apps.**
 
-Workflows: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) (push to `main` or manual) and [`.github/workflows/destroy.yml`](.github/workflows/destroy.yml) (manual; type `DESTROY` to confirm).
+---
 
-### Local deploy / destroy
+## API Overview
 
-```bash
-cp .env.deploy.example .env.deploy   # add TF_VAR_* secrets
-export AWS_REGION=us-east-1          # or put in .env.deploy
-./scripts/deploy.sh
-./scripts/destroy.sh DESTROY
-```
+- `POST /campaign/start`  
+  Start a campaign with `brand_context`. Moderation runs, then graph executes to review stage.
+  ```json
+  { "brand_context": "We are an organic snack brand targeting US parents…" }
+  ```
 
-### HTTPS and the browser
+- `GET /campaign/{thread_id}/stream`  
+  Stream state frames:
+  - `{"type":"state_snapshot", ...}`
+  - `{"type":"done", ...}`
 
-The production build sets **`VITE_API_BASE_URL`** to the **App Runner service URL** (`https://…`), so the **CloudFront (HTTPS) SPA** calls an **HTTPS API** and **mixed content** is avoided. The deploy workflow and [`scripts/deploy.sh`](scripts/deploy.sh) read this from `terraform output apprunner_service_url`.
+- `POST /campaign/{thread_id}/approve`  
+  Select candidate; resumes pipeline.  
+  ```json
+  { "selected_candidate_id": "cr_001" }
+  ```
 
-### SSE and timeouts
+See [`backend/app/api/campaigns.py`](backend/app/api/campaigns.py) for full details.
 
-The stream endpoint sends periodic **`: keep-alive`** SSE comments during HITL pauses (see [`backend/app/api/campaigns.py`](backend/app/api/campaigns.py)). App Runner’s **~120s** per-request cap still applies at the platform level—keep sessions within that for the POC, or add client reconnect if you outgrow it.
+---
 
-## API (for a React client)
+## Environment Variables
 
-### `POST /campaign/start`
+See [`backend/.env.example`](backend/.env.example) for all options.
 
-```json
-{ "brand_context": "We are an organic snack brand targeting US parents…" }
-```
+| Variable                | Example                            | Description |
+|-------------------------|------------------------------------|-------------|
+| `OPENAI_API_KEY`        | (string)                           | OpenAI API key (required) |
+| `PINECONE_API_KEY`      | (string)                           | Pinecone API key (required) |
+| `PINECONE_EMBEDDING_MODEL` | llama-text-embed-v2             | Pinecone embedding model (default: `llama-text-embed-v2`) |
+| `COMPETITOR_LIST`       | Adidas,Nike,Puma                   | Comma-separated competitor names (optional) |
+| `DATABASE_URL`          | postgres://...                     | Postgres connection string |
+| ...                     | ...                                | See `.env.example` for full list  |
 
-Response: `{ "thread_id": "<uuid>" }`  
-Runs moderation, then runs the graph until the **interrupt before `writer_node`**.
+---
 
-### `GET /campaign/{thread_id}/stream`
+## Troubleshooting
 
-`text/event-stream` frames:
+- **Docker fails to start:** Check `.env` files and required keys, then rebuild (`docker compose build --no-cache`).
+- **Pinecone errors:** Make sure your API key and index model match your Pinecone project.
+- **Frontend can't connect to API:** Verify `VITE_API_BASE_URL` and backend is running.
+- **App Runner timeouts:** Service may be paused or have hit the 120s request cap; see AWS docs for limits.
 
-- `data: {"type":"state_snapshot","thread_id":"…","next":["writer_node"],"values":{...}}\n\n`
-- `data: {"type":"done","thread_id":"…"}\n\n` when `next` is empty (run finished).
+---
 
-Poll the UI on `values.logs`, `values.candidate_list`, and `next`.
+## Project Layout
 
-### `POST /campaign/{thread_id}/approve`
+- `backend/app` — FastAPI app, LangGraph graph, nodes, schemas
+- `backend/scripts/seed_pinecone.py` — Seed demo creators
+- `frontend/` — React + Vite app
+- `infra/` — Terraform IaC (see `infra/README.md`)
+- `docker-compose.yaml` — Postgres + API services
 
-```json
-{ "selected_candidate_id": "cr_001" }
-```
+---
 
-Must match a `creator_id` present in `values.candidate_list`. Returns `{ "status": "resumed" }` and resumes the graph asynchronously.
+## Contributing
 
-## Environment variables
+Contributions welcome! Please:
+- Open issues for bugs or feature requests
+- Submit pull requests for improvements or fixes
+- See [CONTRIBUTING.md](CONTRIBUTING.md) (if available) for coding guidelines
 
-See [backend/.env.example](backend/.env.example).
+---
 
-- **`PINECONE_EMBEDDING_MODEL`:** defaults to **`llama-text-embed-v2`** (Pinecone Inference via `PineconeEmbeddings`). Your index must match that model; see [Pinecone docs](https://docs.pinecone.io/models/llama-text-embed-v2).
-- **`COMPETITOR_LIST`:** comma-separated names checked in the outbound `guardrail_validator` node (word-boundary, case-insensitive).
-
-## Dependency note (guardrails + LangGraph)
-
-`guardrails-ai>=0.10` is required so `langchain-core` can stay on the **1.x** line required by **LangGraph 1.1.x**. Older `guardrails-ai 0.6.x` pins `langchain-core<0.4`, which conflicts with current LangGraph releases.
-
-## Layout
-
-- [backend/app](backend/app) — FastAPI app, LangGraph graph, nodes, tools, schemas.
-- [backend/scripts/seed_pinecone.py](backend/scripts/seed_pinecone.py) — seed demo creators.
-- [docker-compose.yaml](docker-compose.yaml) — Postgres + API.
+**[⬆ Back to top](#influencer-matchmaking-engine)**
